@@ -23,10 +23,10 @@
 }
 html, body { height: 100%; margin: 0; }
 [hidden] { display: none !important; }
-body { background: var(--ground); color: var(--paper); font-family: var(--mono); overflow: hidden; }
-canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+body { background: var(--ground); color: var(--paper); font-family: var(--mono); overflow: hidden; overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+canvas { display: block; position: fixed; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 #overlay {
-  position: fixed; inset: 0; display: grid; place-items: center;
+  position: fixed; inset: 0; display: grid; place-items: safe center; overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
   padding-block: 16px;
@@ -63,6 +63,15 @@ button {
 button:hover { background: #6c7c44; }
 button:focus-visible { outline: 3px solid var(--signal); outline-offset: 3px; }
 .tip { font-size: 12px; color: #5a5440; border-left: 3px solid var(--signal); padding-left: 10px; }
+.row { display: contents; }
+@media (pointer: coarse) { .kb { display: none; } }
+@media (pointer: fine) { .tc { display: none; } }
+@media (max-height: 520px) {
+  .card { padding: 18px 20px 16px; gap: 10px; width: min(640px, 100%); }
+  h1 { font-size: 38px; }
+  .card .tip { display: none; }
+  button { font-size: 20px; padding: 9px 16px; }
+}
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -74,11 +83,15 @@ button:focus-visible { outline: 3px solid var(--signal); outline-offset: 3px; }
     <h1>Iron Bocage</h1>
     <p>Hold the fields against waves of enemy armor. Your gun can't punch through a heavy's front plate. Get to its side or rear.</p>
     <div class="keys">
-      <kbd>W A S D</kbd><span>Drive and steer the hull</span>
-      <kbd>Mouse</kbd><span>Traverse the turret</span>
-      <kbd>Click / Space</kbd><span>Fire the main gun</span>
-      <kbd>P</kbd><span>Pause</span>
-      <kbd>M</kbd><span>Sound on or off</span>
+      <div class="row kb"><kbd>W A S D</kbd><span>Drive and steer the hull</span></div>
+      <div class="row kb"><kbd>Mouse</kbd><span>Traverse the turret</span></div>
+      <div class="row kb"><kbd>Click / Space</kbd><span>Fire the main gun</span></div>
+      <div class="row kb"><kbd>P</kbd><span>Pause</span></div>
+      <div class="row kb"><kbd>M</kbd><span>Sound on or off</span></div>
+      <div class="row tc"><kbd>Left thumb</kbd><span>Drag toward where the hull should go. Pull back to reverse.</span></div>
+      <div class="row tc"><kbd>Right thumb</kbd><span>Drag to traverse the turret</span></div>
+      <div class="row tc"><kbd>FIRE</kbd><span>Hold to fire each time the gun reloads</span></div>
+      <div class="row tc"><kbd>II</kbd><span>Pause</span></div>
     </div>
     <p class="tip">Angle your hull toward incoming fire. Shells striking sloped armor can ricochet.</p>
     <button id="startBtn" type="button">Deploy</button>
@@ -110,9 +123,42 @@ function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
   VW = window.innerWidth; VH = window.innerHeight;
   canvas.width = Math.round(VW * DPR); canvas.height = Math.round(VH * DPR);
-  SCALE = clamp(Math.min(VW / 1150, VH / 760), 0.55, 1.25);
+  SCALE = clamp(Math.min(VW / 1150, VH / 760), Math.min(VW, VH) < 500 ? 0.7 : 0.55, 1.25); // phones zoom in a little so tanks stay readable
 }
-window.addEventListener("resize", resize); resize();
+window.addEventListener("resize", resize);
+
+// ---------- touch controls (twin stick) ----------
+const touch = { active: false, move: null, aim: null, fireId: null, aimAng: null, ins: { t: 0, r: 0, b: 0, l: 0 } };
+try { touch.active = window.matchMedia("(pointer: coarse)").matches; } catch (err) { /* ignore */ }
+const insetProbe = document.createElement("div");
+insetProbe.style.cssText = "position:fixed;visibility:hidden;pointer-events:none;top:env(safe-area-inset-top,0px);right:env(safe-area-inset-right,0px);bottom:env(safe-area-inset-bottom,0px);left:env(safe-area-inset-left,0px);width:0;height:0";
+document.body.appendChild(insetProbe);
+function readInsets() {
+  const cs = getComputedStyle(insetProbe);
+  touch.ins = { t: parseFloat(cs.top) || 0, r: parseFloat(cs.right) || 0, b: parseFloat(cs.bottom) || 0, l: parseFloat(cs.left) || 0 };
+}
+const STICK_R = 58;
+function touchLayout() {
+  const i = touch.ins, small = VW < 500;
+  return {
+    fire: { x: VW - i.r - 74, y: VH - i.b - 84, r: small ? 40 : 46 },
+    moveHome: { x: i.l + Math.min(110, VW * 0.22), y: VH - i.b - 110 },
+    aimHome: { x: VW - i.r - Math.min(210, VW * 0.42), y: VH - i.b - 110 },
+  };
+}
+function hudLayout() {
+  const i = touch.ins, pad = 16, small = VW < 500;
+  const mw = small ? 100 : VW < 700 ? 130 : 180, mh = mw * 1600 / 2400;
+  const panelW = small ? 200 : 236;
+  const mini = touch.active ? { x: VW - mw - pad - i.r, y: pad + i.t } : { x: VW - mw - pad - i.r, y: VH - mh - pad - i.b };
+  return { pad, panelX: pad + i.l, panelY: pad + i.t, panelW, mw, mh, mini, pause: { x: mini.x - 34, y: pad + i.t + 22, r: 20 } };
+}
+function stickVec(s) {
+  const dx = s.x - s.ox, dy = s.y - s.oy, d = Math.hypot(dx, dy);
+  return { mag: Math.min(1, d / STICK_R), ang: Math.atan2(dy, dx) };
+}
+resize(); readInsets();
+window.addEventListener("resize", readInsets);
 
 // ---------- world ----------
 const WW = 2400, WH = 1600, CELL = 40, GW = WW / CELL, GH = WH / CELL;
@@ -303,6 +349,7 @@ function newGame() {
   player = makeTank("player", PLAYER_SPAWN.x, PLAYER_SPAWN.y, -0.6); player.reload = 0;
   enemies = []; shells = []; particles = []; texts = [];
   wave = 0; score = 0; kills = 0; shotsFired = 0; shotsHit = 0; waveTimer = 2.5; shake = 0; hurt = 0;
+  releaseTouches(); touch.aimAng = player.angle;
   cam.x = player.x; cam.y = player.y;
   computeFlow(player.x, player.y);
 }
@@ -346,9 +393,40 @@ window.addEventListener("keydown", e => {
 });
 window.addEventListener("keyup", e => keys.delete(e.key.toLowerCase()));
 window.addEventListener("blur", () => { keys.clear(); mouse.down = false; });
-canvas.addEventListener("pointermove", e => { mouse.x = e.clientX; mouse.y = e.clientY; });
-canvas.addEventListener("pointerdown", e => { mouse.x = e.clientX; mouse.y = e.clientY; mouse.down = true; audio.init(); });
-window.addEventListener("pointerup", () => { mouse.down = false; });
+const near = (e, c, k = 1) => Math.hypot(e.clientX - c.x, e.clientY - c.y) <= c.r * k;
+canvas.addEventListener("pointerdown", e => {
+  audio.init();
+  if (e.pointerType === "mouse") { touch.active = false; mouse.x = e.clientX; mouse.y = e.clientY; mouse.down = true; return; }
+  e.preventDefault();
+  if (!touch.active) { touch.active = true; touch.aimAng = player ? turretWorld(player) : null; }
+  if (state !== "play" && state !== "pause") return;
+  if (near(e, hudLayout().pause, 1.5)) { state = state === "play" ? "pause" : "play"; releaseTouches(); return; }
+  if (state !== "play") return;
+  const L = touchLayout();
+  const s = { id: e.pointerId, ox: e.clientX, oy: e.clientY, x: e.clientX, y: e.clientY };
+  if (touch.fireId === null && near(e, L.fire, 1.3)) touch.fireId = e.pointerId;
+  else if (e.clientX < VW / 2) { if (!touch.move) touch.move = s; }
+  else if (!touch.aim) touch.aim = s;
+});
+window.addEventListener("pointermove", e => {
+  if (e.pointerType === "mouse") { mouse.x = e.clientX; mouse.y = e.clientY; return; }
+  for (const s of [touch.move, touch.aim]) {
+    if (!s || s.id !== e.pointerId) continue;
+    s.x = e.clientX; s.y = e.clientY;
+    const dx = s.x - s.ox, dy = s.y - s.oy, d = Math.hypot(dx, dy);
+    if (d > STICK_R * 1.4) { s.ox = s.x - dx / d * STICK_R * 1.4; s.oy = s.y - dy / d * STICK_R * 1.4; } // base follows the thumb
+  }
+});
+function releasePointer(e) {
+  if (e.pointerType === "mouse") { mouse.down = false; return; }
+  if (touch.move && touch.move.id === e.pointerId) touch.move = null;
+  if (touch.aim && touch.aim.id === e.pointerId) touch.aim = null;
+  if (touch.fireId === e.pointerId) touch.fireId = null;
+}
+function releaseTouches() { touch.move = null; touch.aim = null; touch.fireId = null; }
+window.addEventListener("pointerup", releasePointer);
+window.addEventListener("pointercancel", releasePointer);
+document.addEventListener("visibilitychange", () => { if (document.hidden && state === "play") { state = "pause"; releaseTouches(); keys.clear(); mouse.down = false; } });
 canvas.addEventListener("contextmenu", e => e.preventDefault());
 
 // ---------- audio (synthesized) ----------
@@ -674,11 +752,30 @@ function update(dt) {
   if (player.alive) {
     const up = keys.has("w") || keys.has("arrowup"), dn = keys.has("s") || keys.has("arrowdown");
     const lf = keys.has("a") || keys.has("arrowleft"), rt = keys.has("d") || keys.has("arrowright");
-    player.throttle = up ? 1 : dn ? -1 : 0;
-    player.turnIn = (rt ? 1 : 0) - (lf ? 1 : 0);
-    mouse.wx = (mouse.x - VW / 2) / SCALE + cam.x; mouse.wy = (mouse.y - VH / 2) / SCALE + cam.y;
-    aimTurret(player, Math.atan2(mouse.wy - player.y, mouse.wx - player.x), dt);
-    if ((mouse.down || keys.has(" ")) && player.reload <= 0) fireGun(player, 0.008);
+    let thr = up ? 1 : dn ? -1 : 0, turn = (rt ? 1 : 0) - (lf ? 1 : 0);
+    if (touch.move) {
+      // drive toward the stick direction; pull the stick backward to reverse
+      const v = stickVec(touch.move);
+      if (v.mag > 0.15) {
+        const diff = angDiff(player.angle, v.ang);
+        let steer;
+        if (Math.abs(diff) > 2.3) { steer = angDiff(player.angle, v.ang + Math.PI); thr = -v.mag; }
+        else { steer = diff; thr = v.mag * (Math.abs(diff) > 1.0 ? 0.25 : 1); }
+        turn = clamp(steer * 2.5, -1, 1) * (player.speed < -5 ? -1 : 1);
+      }
+    }
+    player.throttle = thr; player.turnIn = turn;
+    let aimAng;
+    if (touch.active) {
+      if (touch.aim) { const v = stickVec(touch.aim); if (v.mag > 0.2) touch.aimAng = v.ang; }
+      aimAng = touch.aimAng === null ? turretWorld(player) : touch.aimAng;
+      mouse.wx = player.x + Math.cos(aimAng) * 260; mouse.wy = player.y + Math.sin(aimAng) * 260;
+    } else {
+      mouse.wx = (mouse.x - VW / 2) / SCALE + cam.x; mouse.wy = (mouse.y - VH / 2) / SCALE + cam.y;
+      aimAng = Math.atan2(mouse.wy - player.y, mouse.wx - player.x);
+    }
+    aimTurret(player, aimAng, dt);
+    if ((mouse.down || keys.has(" ") || touch.fireId !== null) && player.reload <= 0) fireGun(player, 0.008);
     audio.engineLevel(Math.abs(player.speed) / player.def.speed);
   } else { player.throttle = 0; player.turnIn = 0; audio.engineLevel(0); }
 
@@ -949,31 +1046,32 @@ function drawHUD() {
     c.save(); c.translate(VW / 2 + Math.cos(a) * R, VH / 2 + Math.sin(a) * R); c.rotate(a);
     c.fillStyle = `rgba(220,70,50,${hurt})`; c.beginPath(); c.moveTo(18, 0); c.lineTo(-8, -14); c.lineTo(-8, 14); c.closePath(); c.fill(); c.restore();
   }
-  const pad = Math.max(16, 14);
+  const H = hudLayout(), pad = H.pad, px = H.panelX, py = H.panelY, barW = H.panelW - 76;
   c.textAlign = "left"; c.textBaseline = "alphabetic";
   // panel
-  c.fillStyle = "rgba(20,22,15,0.72)"; c.fillRect(pad, pad, 236, 92);
+  c.fillStyle = "rgba(20,22,15,0.72)"; c.fillRect(px, py, H.panelW, 92);
   c.fillStyle = "#e6dcc0"; c.font = '600 11px "IBM Plex Mono", monospace';
-  c.fillText("HULL", pad + 12, pad + 22);
+  c.fillText("HULL", px + 12, py + 22);
   const hp = clamp(player.hp / player.def.hp, 0, 1);
-  c.fillStyle = "#3a3a2c"; c.fillRect(pad + 64, pad + 13, 160, 11);
-  c.fillStyle = hp > 0.5 ? "#8ea04f" : hp > 0.25 ? "#d9a43a" : "#c44a32"; c.fillRect(pad + 64, pad + 13, 160 * hp, 11);
-  c.fillStyle = "#e6dcc0"; c.fillText("GUN", pad + 12, pad + 44);
+  c.fillStyle = "#3a3a2c"; c.fillRect(px + 64, py + 13, barW, 11);
+  c.fillStyle = hp > 0.5 ? "#8ea04f" : hp > 0.25 ? "#d9a43a" : "#c44a32"; c.fillRect(px + 64, py + 13, barW * hp, 11);
+  c.fillStyle = "#e6dcc0"; c.fillText("GUN", px + 12, py + 44);
   const rl = 1 - player.reload / player.def.reload;
-  c.fillStyle = "#3a3a2c"; c.fillRect(pad + 64, pad + 35, 160, 11);
-  c.fillStyle = rl >= 1 ? "#f2c14e" : "#8a8a72"; c.fillRect(pad + 64, pad + 35, 160 * rl, 11);
-  if (rl >= 1) { c.fillStyle = "#1d2116"; c.font = '600 9px "IBM Plex Mono", monospace'; c.fillText("LOADED", pad + 68, pad + 44); c.font = '600 11px "IBM Plex Mono", monospace'; }
+  c.fillStyle = "#3a3a2c"; c.fillRect(px + 64, py + 35, barW, 11);
+  c.fillStyle = rl >= 1 ? "#f2c14e" : "#8a8a72"; c.fillRect(px + 64, py + 35, barW * rl, 11);
+  if (rl >= 1) { c.fillStyle = "#1d2116"; c.font = '600 9px "IBM Plex Mono", monospace'; c.fillText("LOADED", px + 68, py + 44); c.font = '600 11px "IBM Plex Mono", monospace'; }
   c.fillStyle = "#e6dcc0";
-  c.fillText(`WAVE ${wave}   SCORE ${score}`, pad + 12, pad + 66);
+  c.fillText(`WAVE ${wave}   SCORE ${score}`, px + 12, py + 66);
   c.fillStyle = "#bdb79c";
-  c.fillText(`HOSTILES ${enemies.length}   KILLS ${kills}`, pad + 12, pad + 82);
+  c.fillText(`HOSTILES ${enemies.length}   KILLS ${kills}`, px + 12, py + 82);
   // wave countdown
   if (state === "play" && enemies.length === 0 && waveTimer > 0 && wave >= 0) {
     c.textAlign = "center"; c.font = `700 ${Math.round(26 * Math.max(SCALE, 0.8))}px "Stardos Stencil", Impact, sans-serif`;
-    c.fillStyle = "rgba(230,220,192,0.92)"; c.fillText(`WAVE ${wave + 1} IN ${Math.ceil(waveTimer)}`, VW / 2, 70);
+    c.fillStyle = "rgba(230,220,192,0.92)"; c.fillText(`WAVE ${wave + 1} IN ${Math.ceil(waveTimer)}`, VW / 2, Math.max(py + 130, VH * 0.28));
   }
+  if (touch.active && (state === "play" || state === "pause")) drawTouchControls(H, rl);
   // minimap
-  const mw = VW < 600 ? 120 : 180, mh = mw * WH / WW, mx = VW - mw - pad, my = VH - mh - pad, k = mw / WW;
+  const mw = H.mw, mh = H.mh, mx = H.mini.x, my = H.mini.y, k = mw / WW;
   c.fillStyle = "rgba(20,22,15,0.78)"; c.fillRect(mx - 4, my - 4, mw + 8, mh + 8);
   c.fillStyle = "#3e4a28"; c.fillRect(mx, my, mw, mh);
   c.fillStyle = "#2b3a1a"; for (const h of hedges) c.fillRect(mx + h.x * k, my + h.y * k, Math.max(1, h.w * k), Math.max(1, h.h * k));
@@ -984,12 +1082,48 @@ function drawHUD() {
   if (player.alive) { c.fillStyle = "#f2e9c9"; c.beginPath(); c.arc(mx + player.x * k, my + player.y * k, 3.2, 0, TAU); c.fill(); }
   c.strokeStyle = "rgba(230,220,192,0.5)"; c.lineWidth = 1;
   c.strokeRect(mx + (cam.x - VW / 2 / SCALE) * k, my + (cam.y - VH / 2 / SCALE) * k, VW / SCALE * k, VH / SCALE * k);
-  if (!audio.on) { c.textAlign = "right"; c.fillStyle = "#bdb79c"; c.font = '600 11px "IBM Plex Mono", monospace'; c.fillText("SOUND OFF", VW - pad, pad + 12); }
+  if (!audio.on) { c.textAlign = "right"; c.fillStyle = "#bdb79c"; c.font = '600 11px "IBM Plex Mono", monospace'; c.fillText("SOUND OFF", mx + mw, my + mh + 18); }
   if (state === "pause") {
     c.fillStyle = "rgba(15,17,11,0.55)"; c.fillRect(0, 0, VW, VH);
     c.textAlign = "center"; c.fillStyle = "#e6dcc0"; c.font = '700 48px "Stardos Stencil", Impact, sans-serif';
-    c.fillText("HALT", VW / 2, VH / 2); c.font = '600 13px "IBM Plex Mono", monospace'; c.fillText("Press P to resume", VW / 2, VH / 2 + 30);
+    c.fillText("HALT", VW / 2, VH / 2); c.font = '600 13px "IBM Plex Mono", monospace'; c.fillText(touch.active ? "Tap II to resume" : "Press P to resume", VW / 2, VH / 2 + 30);
+    if (touch.active) drawPauseButton(H.pause);
   }
+}
+function drawPauseButton(p) {
+  const c = ctx;
+  c.fillStyle = "rgba(20,22,15,0.72)"; c.beginPath(); c.arc(p.x, p.y, p.r, 0, TAU); c.fill();
+  c.strokeStyle = "rgba(230,220,192,0.5)"; c.lineWidth = 1.5; c.stroke();
+  c.fillStyle = "#e6dcc0";
+  if (state === "pause") { c.beginPath(); c.moveTo(p.x - 5, p.y - 8); c.lineTo(p.x + 8, p.y); c.lineTo(p.x - 5, p.y + 8); c.closePath(); c.fill(); }
+  else { c.fillRect(p.x - 6, p.y - 7, 4, 14); c.fillRect(p.x + 2, p.y - 7, 4, 14); }
+}
+function drawStick(s, home, label) {
+  const c = ctx, ox = s ? s.ox : home.x, oy = s ? s.oy : home.y;
+  c.globalAlpha = s ? 0.9 : 0.35;
+  c.fillStyle = "rgba(20,22,15,0.45)"; c.beginPath(); c.arc(ox, oy, STICK_R, 0, TAU); c.fill();
+  c.strokeStyle = "rgba(230,220,192,0.6)"; c.lineWidth = 2; c.stroke();
+  let kx = ox, ky = oy;
+  if (s) { const v = stickVec(s); kx = ox + Math.cos(v.ang) * v.mag * STICK_R; ky = oy + Math.sin(v.ang) * v.mag * STICK_R; }
+  c.fillStyle = "rgba(230,220,192,0.85)"; c.beginPath(); c.arc(kx, ky, 22, 0, TAU); c.fill();
+  if (!s) { c.fillStyle = "#e6dcc0"; c.textAlign = "center"; c.font = '600 11px "IBM Plex Mono", monospace'; c.fillText(label, ox, oy - STICK_R - 10); }
+  c.globalAlpha = 1;
+}
+function drawTouchControls(H, rl) {
+  const c = ctx, L = touchLayout();
+  drawStick(touch.move, L.moveHome, "DRIVE");
+  drawStick(touch.aim, L.aimHome, "AIM");
+  // fire button with reload ring
+  const f = L.fire, held = touch.fireId !== null, ready = rl >= 1;
+  c.fillStyle = ready ? (held ? "rgba(140,160,80,0.95)" : "rgba(93,107,58,0.88)") : "rgba(50,52,40,0.8)";
+  c.beginPath(); c.arc(f.x, f.y, f.r, 0, TAU); c.fill();
+  c.strokeStyle = "rgba(0,0,0,0.4)"; c.lineWidth = 2; c.stroke();
+  c.strokeStyle = ready ? "#f2c14e" : "#bdb79c"; c.lineWidth = 4;
+  c.beginPath(); c.arc(f.x, f.y, f.r - 5, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(rl, 0, 1)); c.stroke();
+  c.fillStyle = "#e6dcc0"; c.textAlign = "center"; c.textBaseline = "middle";
+  c.font = '700 18px "Stardos Stencil", Impact, sans-serif'; c.fillText("FIRE", f.x, f.y + 1);
+  c.textBaseline = "alphabetic";
+  if (state === "play") drawPauseButton(H.pause);
 }
 
 // ---------- menus ----------
